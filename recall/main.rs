@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let hint = find_hint(&request, &tool_input);
+    let hint = shared::find_hint(&request.tool_name, &tool_input);
 
     let response = PreToolUseResponse {
         hook_specific_output: hint.map(|additional_context| PreToolUseHookSpecificOutput {
@@ -45,12 +45,6 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
-}
-
-// TODO: look up memory once the recall store exists. Returning None means "no hint,
-// let the tool call proceed unchanged".
-fn find_hint(_request: &PreToolUseRequest, _tool_input: &ChromeToolInput) -> Option<String> {
-    None
 }
 
 fn write_response(response: &PreToolUseResponse) -> serde_json::Result<()> {

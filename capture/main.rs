@@ -1,55 +1,65 @@
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-use shared::{ChromeToolInput, PostToolUseRequest, PostToolUseResponse};
+use shared::{ChromeToolInput, HookEvent, PostToolUseHookSpecificOutput, PostToolUseResponse};
+
+mod error;
+mod normalizer;
+mod privacy;
+
+use error::CaptureError;
 
 fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("capture: {err}");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn run() -> Result<(), CaptureError> {
     let mut raw = String::new();
-    if let Err(err) = io::stdin().read_to_string(&mut raw) {
-        eprintln!("capture: failed to read stdin: {err}");
-        return ExitCode::SUCCESS;
+    io::stdin().read_to_string(&mut raw)?;
+
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    let event = HookEvent::from_value(value)?;
+
+    let mut normalized = normalizer::normalize(&event);
+    let violations = privacy::redact(&mut normalized.payload);
+    if !violations.is_empty() {
+        eprintln!("capture: {}", CaptureError::privacy(violations));
     }
 
-    let request: PostToolUseRequest = match serde_json::from_str(&raw) {
-        Ok(request) => request,
-        Err(err) => {
-            eprintln!("capture: failed to parse PostToolUseRequest: {err}");
-            return ExitCode::SUCCESS;
+    record_step(&normalized);
+
+    let response_body = match &event {
+        HookEvent::PostToolUse(request) => {
+            let tool_input = ChromeToolInput::from_tool_call(&request.tool_name, request.tool_input.clone())
+                .unwrap_or_else(|_| ChromeToolInput::Unknown(request.tool_input.clone()));
+            let hint = shared::find_hint(&request.tool_name, &tool_input);
+            let response = PostToolUseResponse {
+                hook_specific_output: hint.map(|additional_context| PostToolUseHookSpecificOutput {
+                    hook_event_name: "PostToolUse".to_string(),
+                    additional_context: Some(additional_context),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            serde_json::to_string(&response)?
         }
+        _ => "{}".to_string(),
     };
 
-    let tool_input = match ChromeToolInput::from_tool_call(&request.tool_name, request.tool_input.clone()) {
-        Ok(tool_input) => tool_input,
-        Err(err) => {
-            eprintln!(
-                "capture: failed to parse tool_input for {}: {err}",
-                request.tool_name
-            );
-            ChromeToolInput::Unknown(request.tool_input.clone())
-        }
-    };
-
-    record_step(&request, &tool_input);
-
-    let response = PostToolUseResponse::default();
-    if let Err(err) = write_response(&response) {
-        eprintln!("capture: failed to write response: {err}");
-    }
-
-    ExitCode::SUCCESS
-}
-
-// TODO: persist the step once the capture store (db/log) exists. For now this just
-// confirms the hook is wired end-to-end.
-fn record_step(request: &PostToolUseRequest, tool_input: &ChromeToolInput) {
-    eprintln!(
-        "capture: session={} tool={} input={:?}",
-        request.session_id, request.tool_name, tool_input
-    );
-}
-
-fn write_response(response: &PostToolUseResponse) -> serde_json::Result<()> {
-    let body = serde_json::to_string(response)?;
-    let _ = io::stdout().write_all(body.as_bytes());
+    io::stdout().write_all(response_body.as_bytes())?;
     Ok(())
+}
+
+// TODO: persist the normalized step once the capture store (db/log) exists.
+fn record_step(event: &normalizer::NormalizedEvent) {
+    eprintln!(
+        "capture: session={} event={} tool={:?} payload={}",
+        event.session_id, event.hook_event_name, event.tool_name, event.payload
+    );
 }
