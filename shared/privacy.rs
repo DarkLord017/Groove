@@ -166,3 +166,82 @@ fn scrub_string(path: &str, s: &mut String, violations: &mut Vec<PrivacyViolatio
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_api_key_assignment() {
+        let mut s = "api_key=abcdefghijklmnopqrstuvwxyz1234567890".to_string();
+        let violations = redact_str(&mut s);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].pattern, "api key/token/password assignment");
+        assert_eq!(s, "[REDACTED_SECRET]");
+    }
+
+    #[test]
+    fn redacts_anthropic_key() {
+        let mut s = "key is sk-ant-abcdefghijklmnopqrstuvwxyzABCDEF".to_string();
+        let violations = redact_str(&mut s);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].pattern, "Anthropic key");
+        assert_eq!(s, "key is [REDACTED_SECRET]");
+    }
+
+    #[test]
+    fn generic_prefixed_key_does_not_match_mid_token() {
+        // "xsk-proj-..." must NOT match - sk- has to start a token, not sit inside one.
+        let mut s = "xsk-proj-abcdefghijklmnopqrstuvwxyzABCDEF".to_string();
+        let violations = redact_str(&mut s);
+        assert!(violations.is_empty());
+        assert_eq!(s, "xsk-proj-abcdefghijklmnopqrstuvwxyzABCDEF");
+    }
+
+    #[test]
+    fn redacts_private_tag_and_everything_inside_it() {
+        // private-tag redaction must run before the generic key patterns, so content
+        // inside <private> gets wiped wholesale rather than partially redacted.
+        let mut s = "note: <private>key is sk-ant-abcdefghijklmnopqrstuvwxyzABCDEF</private>".to_string();
+        let violations = redact_str(&mut s);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].pattern, "private tag");
+        assert_eq!(s, "note: [REDACTED]");
+    }
+
+    #[test]
+    fn redacts_url_credentials_but_keeps_the_scheme() {
+        let mut s = "go to https://admin:sup3rSecret@internal.example.com/dashboard".to_string();
+        let violations = redact_str(&mut s);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].pattern, "URL credentials");
+        assert_eq!(
+            s,
+            "go to https://[REDACTED_SECRET]@internal.example.com/dashboard"
+        );
+    }
+
+    #[test]
+    fn leaves_plain_text_untouched() {
+        let mut s = "just a normal ls -la command".to_string();
+        let violations = redact_str(&mut s);
+        assert!(violations.is_empty());
+        assert_eq!(s, "just a normal ls -la command");
+    }
+
+    #[test]
+    fn redact_walks_nested_json() {
+        let mut value = serde_json::json!({
+            "tool_input": {"command": "echo hi"},
+            "tool_response": {"out": "api_key=abcdefghijklmnopqrstuvwxyz1234567890"},
+        });
+        let violations = redact(&mut value);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].path, "$.tool_response.out");
+        assert_eq!(
+            value["tool_response"]["out"],
+            serde_json::json!("[REDACTED_SECRET]")
+        );
+        assert_eq!(value["tool_input"]["command"], serde_json::json!("echo hi"));
+    }
+}

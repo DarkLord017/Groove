@@ -54,7 +54,7 @@ dependencies = [
 name = "recall"
 version = "0.1.0"
 dependencies = [
- "capture",
+ "regex",
  "serde",
  "serde_json",
  "shared",

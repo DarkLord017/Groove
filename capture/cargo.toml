@@ -3,8 +3,9 @@ name = "capture"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-path = "lib.rs"
+[[bin]]
+name = "capture"
+path = "main.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
