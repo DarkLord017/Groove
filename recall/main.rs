@@ -5,7 +5,6 @@ use capture::CaptureError;
 use shared::{ChromeToolInput, HookEvent, PreToolUseHookSpecificOutput, PreToolUseResponse};
 
 mod hint;
-mod privacy;
 
 fn main() -> ExitCode {
     match run() {
@@ -26,7 +25,7 @@ fn run() -> Result<(), CaptureError> {
     // Redact at the boundary, before anything derives from the payload: the HookEvent,
     // the normalized record, and the tool_input handed to find_hint all come from this
     // value, so none of them can observe a secret.
-    let violations = privacy::redact(&mut value);
+    let violations = shared::privacy::redact(&mut value);
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
         eprintln!(
@@ -45,7 +44,19 @@ fn run() -> Result<(), CaptureError> {
         HookEvent::PreToolUse(request) => {
             let tool_input = ChromeToolInput::from_tool_call(&request.tool_name, request.tool_input.clone())
                 .unwrap_or_else(|_| ChromeToolInput::Unknown(request.tool_input.clone()));
-            let hint = hint::find_hint(&request.tool_name, &tool_input);
+            let hint = hint::find_hint(&request.tool_name, &tool_input).map(|mut text| {
+                // Redact on the way out too: once find_hint reads from real storage,
+                // this is what stops a secret captured in an earlier session from
+                // round-tripping straight back into Claude's context here.
+                let violations = shared::privacy::redact_str(&mut text);
+                if !violations.is_empty() {
+                    eprintln!(
+                        "recall: redacted {} sensitive value(s) from outgoing hint",
+                        violations.len()
+                    );
+                }
+                text
+            });
             let response = PreToolUseResponse {
                 hook_specific_output: hint.map(|additional_context| PreToolUseHookSpecificOutput {
                     hook_event_name: "PreToolUse".to_string(),
