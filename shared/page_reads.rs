@@ -67,3 +67,14 @@ pub struct ReadNetworkRequestsInput {
     #[serde(rename = "urlPattern", skip_serializing_if = "Option::is_none")]
     pub url_pattern: Option<String>,
 }
+
+/// A single element parsed out of read_page's or find's plain-text tool_response, e.g.
+/// {ref_id: "ref_17", description: "textbox \"First name\""}. Not deserialized from
+/// JSON - both tools return plain text, not JSON - this is the typed shape that text
+/// gets parsed into, named here so it's part of the shared vocabulary rather than an
+/// anonymous tuple scattered wherever it's produced or consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageElement {
+    pub ref_id: String,
+    pub description: String,
+}
