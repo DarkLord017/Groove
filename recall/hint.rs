@@ -1,4 +1,4 @@
-use crate::chrome_tool::ChromeToolInput;
+use shared::ChromeToolInput;
 
 // TODO: look up memory once the recall store exists. Returning None means "no hint
 // found — leave the caller's response unchanged."

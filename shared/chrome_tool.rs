@@ -1,6 +1,3 @@
-// Hooks only see `tool_name: String` + `tool_input: Value` (see struct.rs). This turns
-// that pair into the matching typed struct from page_reads/page_changes/action.
-
 use serde_json::Value;
 
 use crate::action::{
