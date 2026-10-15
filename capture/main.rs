@@ -8,7 +8,6 @@ use shared::{
 
 mod elements;
 mod error;
-mod redis_stub;
 
 use error::CaptureError;
 
@@ -71,7 +70,7 @@ fn handle_session_end(request: &SessionEndRequest) {
         "capture: session_end session={} reason={}",
         request.common.session_id, request.reason
     );
-    redis_stub::delete_session_maps(&request.common.session_id);
+    redis_store::delete_session_maps(&request.common.session_id);
 }
 
 // Shared by the top-level PostToolUse dispatch and by browser_batch's inner actions -
@@ -110,16 +109,16 @@ fn handle_tool_call(
         // a tab means its map is dead; switching browsers means every tab in the
         // session's map is dead (different browser, different tabs entirely).
         Ok(ChromeToolInput::Navigate(input)) => match input.tab_id {
-            Some(tab_id) => redis_stub::delete_tab_maps(session_id, tab_id),
+            Some(tab_id) => redis_store::delete_tab_maps(session_id, tab_id),
             None => eprintln!(
                 "capture: [delete] navigate with no explicit tabId - cannot determine which tab's map to delete"
             ),
         },
         Ok(ChromeToolInput::TabsClose(input)) => {
-            redis_stub::delete_tab_maps(session_id, input.tab_id as f64)
+            redis_store::delete_tab_maps(session_id, input.tab_id as f64)
         }
         Ok(ChromeToolInput::SelectBrowser(_)) | Ok(ChromeToolInput::SwitchBrowser(_)) => {
-            redis_stub::delete_session_maps(session_id)
+            redis_store::delete_session_maps(session_id)
         }
 
         // Split: run every inner action through these same rules, in order. The batch
@@ -223,12 +222,12 @@ fn cache_elements(
     };
     if let Some(text) = tool_response.as_str() {
         let found = elements::parse_elements(text);
-        redis_stub::cache_elements(session_id, Some(tab_id), &found);
+        redis_store::cache_elements(session_id, Some(tab_id), &found);
     }
 }
 
 fn resolve_ref(session_id: &str, tab_id: f64, ref_id: &str) {
-    match redis_stub::lookup_element(session_id, tab_id, ref_id) {
+    match redis_store::lookup_element(session_id, tab_id, ref_id) {
         Some(description) => eprintln!("capture: [lookup] {ref_id} => {description}"),
         None => eprintln!("capture: [lookup] {ref_id} => (not cached)"),
     }
@@ -257,13 +256,13 @@ fn resolve_computer(session_id: &str, input: &ComputerInput) {
         if is_click {
             // The ref a click lands on becomes what a later, ref-less type/key
             // action is assumed to be typing into.
-            redis_stub::set_focus(session_id, input.tab_id, ref_id);
+            redis_store::set_focus(session_id, input.tab_id, ref_id);
         }
         return;
     }
 
     if is_type_action {
-        match redis_stub::get_focus(session_id, input.tab_id) {
+        match redis_store::get_focus(session_id, input.tab_id) {
             Some(ref_id) => resolve_ref(session_id, input.tab_id, &ref_id),
             None => eprintln!(
                 "capture: [lookup] type/key with no known focus for this tab - unknown"

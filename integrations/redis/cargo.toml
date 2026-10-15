@@ -1,0 +1,11 @@
+[package]
+name = "redis_store"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+shared = { path = "../../shared" }
+redis = "0.27"

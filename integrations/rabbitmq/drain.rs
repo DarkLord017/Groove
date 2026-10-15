@@ -1,15 +1,3 @@
-// Pulls every message currently sitting in a queue and prints each one's body as one
-// line of JSON to stdout (acking as it goes), so a bash eval script can pipe this
-// through jq and assert on what actually arrived - not what the publisher *claims* it
-// sent, but what the broker actually has.
-//
-// Usage: rabbitmq-drain <queue-name>
-//
-// Polls with basic_get rather than opening a long-lived consumer: this is a one-shot
-// CLI tool, not a service, and "check what's there right now" is all an eval needs.
-// Stops after a few consecutive empty reads (messages can arrive with a little lag
-// after publish) or a hard overall timeout, whichever comes first.
-
 use std::io::{self, Write};
 use std::time::Duration;
 
