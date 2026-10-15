@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::action::{
@@ -14,7 +15,7 @@ use crate::page_reads::{
     ReadPageInput, TabsContextInput,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum ChromeToolInput {
     TabsContext(TabsContextInput),
     Navigate(NavigateInput),

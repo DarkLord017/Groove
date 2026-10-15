@@ -8,7 +8,6 @@ use shared::{
 
 mod elements;
 mod error;
-mod rabbitmq_stub;
 mod redis_stub;
 
 use error::CaptureError;
@@ -63,9 +62,8 @@ fn handle_post_tool_use(request: &PostToolUseRequest) {
         &request.tool_name,
         request.tool_input.clone(),
         Some(&request.tool_response),
+        None,
     );
-
-    rabbitmq_stub::forward_step(request);
 }
 
 fn handle_session_end(request: &SessionEndRequest) {
@@ -77,21 +75,30 @@ fn handle_session_end(request: &SessionEndRequest) {
 }
 
 // Shared by the top-level PostToolUse dispatch and by browser_batch's inner actions -
-// same rules either way, just without a separable tool_response for inner actions (see
-// handle_browser_batch).
+// same map rules either way, just without a separable tool_response for inner actions
+// (see handle_browser_batch). forced_rabbitmq_kind overrides the normal per-tool
+// classification: browser_batch's inner actions always publish "steps", regardless of
+// what kind that tool would normally get standalone (read_page/find included).
 fn handle_tool_call(
     session_id: &str,
     tool_name: &str,
     tool_input: serde_json::Value,
     tool_response: Option<&serde_json::Value>,
+    forced_rabbitmq_kind: Option<shared::rabbitmq::RabbitMessageKind>,
 ) {
-    match ChromeToolInput::from_tool_call(tool_name, tool_input) {
+    let parsed = ChromeToolInput::from_tool_call(tool_name, tool_input);
+
+    match &parsed {
         // Write: read_page/find populate the map.
-        Ok(ChromeToolInput::ReadPage(input)) => cache_elements(session_id, input.tab_id, tool_response, tool_name),
-        Ok(ChromeToolInput::Find(input)) => cache_elements(session_id, input.tab_id, tool_response, tool_name),
+        Ok(ChromeToolInput::ReadPage(input)) => {
+            cache_elements(session_id, input.tab_id, tool_response, tool_name)
+        }
+        Ok(ChromeToolInput::Find(input)) => {
+            cache_elements(session_id, input.tab_id, tool_response, tool_name)
+        }
 
         // Read: these consult the map.
-        Ok(ChromeToolInput::Computer(input)) => resolve_computer(session_id, &input),
+        Ok(ChromeToolInput::Computer(input)) => resolve_computer(session_id, input),
         Ok(ChromeToolInput::FormInput(input)) => resolve_ref(session_id, input.tab_id, &input.r#ref),
         Ok(ChromeToolInput::FileUpload(input)) => resolve_ref(session_id, input.tab_id, &input.r#ref),
         Ok(ChromeToolInput::UploadImage(input)) => match &input.r#ref {
@@ -115,9 +122,13 @@ fn handle_tool_call(
             redis_stub::delete_session_maps(session_id)
         }
 
-        // Split: run every inner action through these same rules, in order
+        // Split: run every inner action through these same rules, in order. The batch
+        // publishes its own "steps" message per inner action, so the outer
+        // browser_batch call publishes nothing itself (it isn't in the allow-list
+        // anyway - see shared::rabbitmq::message_kind).
         Ok(ChromeToolInput::BrowserBatch(input)) => {
-            handle_browser_batch(session_id, &input, tool_response)
+            handle_browser_batch(session_id, input, tool_response);
+            return;
         }
 
         // No normalization: TabsContext, TabsCreate (a new tab starts with an empty
@@ -134,6 +145,19 @@ fn handle_tool_call(
             );
         }
     }
+
+    if let Ok(chrome_tool_input) = parsed {
+        let kind = forced_rabbitmq_kind.or_else(|| shared::rabbitmq::message_kind(&chrome_tool_input));
+        if let Some(kind) = kind {
+            let payload = shared::rabbitmq::marker_payload(&chrome_tool_input).unwrap_or_else(|| {
+                serde_json::json!({
+                    "tool_input": chrome_tool_input,
+                    "tool_response": tool_response,
+                })
+            });
+            rabbitmq::publish_blocking(session_id, tool_name, kind, &payload);
+        }
+    }
 }
 
 fn handle_browser_batch(
@@ -145,24 +169,18 @@ fn handle_browser_batch(
         "capture: [batch] splitting {} inner action(s)",
         input.actions.len()
     );
-
-    // Verified against a real browser_batch call (not guessed): tool_response here is
-    // NOT one flat string. It's a JSON array of {type, text} blocks, each tagged with a
-    // "[action_name] ..." prefix identifying which action it belongs to, plus the odd
-    // trailing block that belongs to no action at all (e.g. tab context). An earlier
-    // version of this code assumed a flat string and silently skipped caching for every
-    // batched read_page/find as a result - this is the fix.
     let mut blocks = tool_response.map(extract_batch_text_blocks).unwrap_or_default();
 
     for action in &input.actions {
-        // browser_batch's own actions use short names ("computer", "navigate", ...),
-        // not the full mcp__claude-in-chrome__ prefixed tool_name every other dispatch
-        // in this file expects - requalify before reusing the same dispatch, otherwise
-        // ChromeToolInput::from_tool_call falls through to Unknown for every one of
-        // them and silently does nothing.
         let tool_name = format!("mcp__claude-in-chrome__{}", action.name);
         let own_response = take_batch_action_response(&mut blocks, &action.name);
-        handle_tool_call(session_id, &tool_name, action.input.clone(), own_response.as_ref());
+        handle_tool_call(
+            session_id,
+            &tool_name,
+            action.input.clone(),
+            own_response.as_ref(),
+            Some(shared::rabbitmq::RabbitMessageKind::Steps),
+        );
     }
 }
 
@@ -179,10 +197,7 @@ fn extract_batch_text_blocks(tool_response: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// Matched by the "[action_name] " prefix, not by position, since the block list can
-// contain extra, un-prefixed entries that belong to no action. Consumes the block it
-// matches so two same-named actions in one batch (e.g. two read_page calls) each get
-// their own block instead of both reading the first one.
+
 fn take_batch_action_response(
     blocks: &mut Vec<String>,
     action_name: &str,

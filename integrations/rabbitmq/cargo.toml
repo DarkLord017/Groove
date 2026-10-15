@@ -1,0 +1,25 @@
+[package]
+name = "rabbitmq"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "rabbitmq-setup"
+path = "setup.rs"
+
+[[bin]]
+name = "rabbitmq-queue-for"
+path = "queue_for.rs"
+
+[[bin]]
+name = "rabbitmq-drain"
+path = "drain.rs"
+
+[dependencies]
+serde_json = "1.0"
+shared = { path = "../../shared" }
+lapin = "2"
+tokio = { version = "1", features = ["rt", "time", "macros"] }

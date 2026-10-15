@@ -4,6 +4,7 @@ pub mod hooks;
 pub mod page_changes;
 pub mod page_reads;
 pub mod privacy;
+pub mod rabbitmq;
 pub mod r#struct;
 
 pub use action::*;
@@ -12,4 +13,5 @@ pub use hooks::*;
 pub use page_changes::*;
 pub use page_reads::*;
 pub use privacy::*;
+pub use rabbitmq::*;
 pub use r#struct::*;

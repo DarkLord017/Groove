@@ -1,32 +1,3 @@
-#!/usr/bin/env bash
-# Integration test for the PreToolUse hook, against a real claude-in-chrome tool call
-# (the actual target of this project), not an arbitrary Bash command.
-#
-# Serves a local login page, registers the real `recall` binary as a PreToolUse hook for
-# every mcp__claude-in-chrome__* tool via an isolated --settings file (never touches this
-# repo's own .claude config, so it can't affect any other session), then runs one real
-# `claude -p --chrome` turn: "go log into this site with these creds". That reliably
-# produces a form_input call carrying the password in tool_input.value - the real thing
-# we need redacted. Verifies two things, read straight out of Claude Code's own
-# --include-hook-events stream (not a side-channel log file), across every
-# mcp__claude-in-chrome__* PreToolUse hook_response in the run:
-#
-#   1. the raw secret never appears in anything recall itself emitted, and at least one
-#      call shows recall reporting a redaction
-#   2. the hint recall computes actually comes back in at least one hook's JSON response,
-#      reaching Claude Code as hookSpecificOutput.additionalContext
-#
-# find_hint has no real memory store yet (always returns None) - see recall/hint.rs - so
-# GROOVE_TEST_HINT forces a deterministic hint for this run only, to prove the delivery
-# plumbing works independent of whether real memory exists.
-#
-# NOTE: every JSON-bearing variable below is piped with `printf '%s\n'`, never `echo`.
-# bash's `echo` interprets backslash escapes (so a literal `\n` *inside* a JSON string
-# value gets turned into a real newline before jq ever sees it), which silently corrupts
-# multi-line JSON text and was the cause of this test's first false negatives.
-#
-# Requires: an authenticated `claude` CLI with claude-in-chrome paired (this makes a real
-# API call and drives your actual Chrome), jq, and python3.
 
 set -euo pipefail
 

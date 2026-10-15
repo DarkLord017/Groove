@@ -42,8 +42,29 @@ fn run() -> Result<(), RecallError> {
 
     let response_body = match &event {
         HookEvent::PreToolUse(request) => {
-            let hint = match ChromeToolInput::from_tool_call(&request.tool_name, request.tool_input.clone()) {
-                Ok(tool_input) => hint::find_hint(&request.tool_name, &tool_input),
+            let parsed = ChromeToolInput::from_tool_call(&request.tool_name, request.tool_input.clone());
+
+            // Send what's going into the tool call. No tool_response exists yet at
+            // this point (the tool hasn't run), so page.snapshot can't apply here -
+            // that stays exclusively capture's/PostToolUse's thing. Anything that
+            // would be page.snapshot after the fact is sent as a plain "steps"
+            // message now instead, since the only honest claim at this moment is
+            // "this is about to happen," not "here is the page."
+            if let Ok(tool_input) = &parsed {
+                if shared::rabbitmq::message_kind(tool_input).is_some() {
+                    let payload = shared::rabbitmq::marker_payload(tool_input)
+                        .unwrap_or_else(|| serde_json::json!({ "tool_input": tool_input }));
+                    rabbitmq::publish_blocking(
+                        &request.session_id,
+                        &request.tool_name,
+                        shared::rabbitmq::RabbitMessageKind::Steps,
+                        &payload,
+                    );
+                }
+            }
+
+            let hint = match &parsed {
+                Ok(tool_input) => hint::find_hint(&request.tool_name, tool_input),
                 Err(err) => {
                     eprintln!(
                         "recall: schema mismatch - {} is a known claude-in-chrome tool but its tool_input didn't deserialize: {err}",
@@ -78,7 +99,18 @@ fn run() -> Result<(), RecallError> {
 
         HookEvent::UserPromptSubmit(request) => {
             let prompt = request.prompt.clone();
+
+            // Check first whether this prompt will even touch claude-in-chrome. Only
+            // if it will do we publish it and look up a hint - no point queuing or
+            // recall-ing for a prompt that was never going to invoke the browser.
             let hint = if hint::find_tool_predicate(&prompt) {
+                rabbitmq::publish_blocking(
+                    &request.common.session_id,
+                    "user_prompt",
+                    shared::rabbitmq::RabbitMessageKind::Prompt,
+                    &serde_json::json!({ "prompt": prompt }),
+                );
+
                 hint::find_hint(&request.common.hook_event_name, &prompt)
             } else {
                 None
