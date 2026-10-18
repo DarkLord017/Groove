@@ -159,9 +159,10 @@ fn handle_tool_call(
         }
     }
 
-    if let Ok(chrome_tool_input) = parsed {
+    if let Ok(mut chrome_tool_input) = parsed {
         let kind = forced_rabbitmq_kind.or_else(|| shared::rabbitmq::message_kind(&chrome_tool_input));
         if let Some(kind) = kind {
+            resolve_ref_for_payload(session_id, &mut chrome_tool_input);
             let payload = shared::rabbitmq::marker_payload(&chrome_tool_input).unwrap_or_else(|| {
                 serde_json::json!({
                     "tool_input": chrome_tool_input,
@@ -170,6 +171,41 @@ fn handle_tool_call(
             });
             rabbitmq::publish_blocking(session_id, tool_name, kind, &payload);
         }
+    }
+}
+
+// Replaces a ref field's raw ref_id with the human-readable description an earlier
+// read_page/find cached for it (via Redis), right before publish - "ref_1" means
+// nothing to anything reading this off RabbitMQ later, the description does. Leaves
+// the raw ref_id in place if nothing is cached for it (fail open: something beats
+// nothing, and a cache miss shouldn't block the publish).
+fn resolve_ref_for_payload(session_id: &str, chrome_tool_input: &mut ChromeToolInput) {
+    match chrome_tool_input {
+        ChromeToolInput::Computer(input) => {
+            if let Some(ref_id) = &input.r#ref {
+                if let Some(description) = redis_store::lookup_element(session_id, input.tab_id, ref_id) {
+                    input.r#ref = Some(description);
+                }
+            }
+        }
+        ChromeToolInput::FormInput(input) => {
+            if let Some(description) = redis_store::lookup_element(session_id, input.tab_id, &input.r#ref) {
+                input.r#ref = description;
+            }
+        }
+        ChromeToolInput::FileUpload(input) => {
+            if let Some(description) = redis_store::lookup_element(session_id, input.tab_id, &input.r#ref) {
+                input.r#ref = description;
+            }
+        }
+        ChromeToolInput::UploadImage(input) => {
+            if let Some(ref_id) = &input.r#ref {
+                if let Some(description) = redis_store::lookup_element(session_id, input.tab_id, ref_id) {
+                    input.r#ref = Some(description);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
