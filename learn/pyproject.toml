@@ -1,0 +1,19 @@
+[project]
+name = "learn"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "DarkLord017", email = "DarkLord017@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "neo4j>=6.4.1",
+    "pika>=1.4.4",
+]
+
+[project.scripts]
+learn = "learn:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"

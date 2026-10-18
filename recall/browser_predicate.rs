@@ -28,6 +28,35 @@ const BROWSER_KEYWORDS: &[&str] = &[
     "form field",
 ];
 
+// Task-intent phrases: the prompt never mentions a browser, page, or URL at all, but the
+// task itself (booking, shopping, price-checking) is realistically only doable by
+// navigating a real site.
+const TASK_INTENT_KEYWORDS: &[&str] = &[
+    "book a",
+    "book me a",
+    "book us a",
+    "buy a",
+    "buy me a",
+    "purchase a",
+    "order a",
+    "order me a",
+    "reserve a",
+    "shop for",
+    "add to cart",
+    "price of",
+    "prices of",
+    "how much does",
+    "how much is",
+    "flight to",
+    "flight from",
+    "flights to",
+    "flights from",
+    "hotel in",
+    "hotel near",
+    "restaurant reservation",
+    "find me a",
+];
+
 /// Predicts whether a prompt is likely to need claude-in-chrome. Errs toward true: a
 /// missed hint (false negative) is a worse outcome than a wasted, cheap lookup (false
 /// positive), since there's no real memory store behind it yet for the cost to matter.
@@ -38,6 +67,7 @@ pub fn predict_needs_browser(prompt: &str) -> bool {
 
     let lower = prompt.to_lowercase();
     BROWSER_KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+        || TASK_INTENT_KEYWORDS.iter().any(|keyword| lower.contains(keyword))
 }
 
 #[cfg(test)]
@@ -61,6 +91,16 @@ mod tests {
         assert!(predict_needs_browser(
             "please log in to the website for me"
         ));
+    }
+
+    #[test]
+    fn detects_task_intent_with_no_browser_language_at_all() {
+        assert!(predict_needs_browser("I want to book a flight to Tokyo"));
+    }
+
+    #[test]
+    fn detects_price_check_task_intent() {
+        assert!(predict_needs_browser("how much does the new iPhone cost"));
     }
 
     #[test]

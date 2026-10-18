@@ -17,6 +17,7 @@ pub enum RabbitMessageKind {
     PageSnapshot,
     Steps,
     Prompt,
+    TurnComplete,
 }
 
 impl RabbitMessageKind {
@@ -25,6 +26,7 @@ impl RabbitMessageKind {
             RabbitMessageKind::PageSnapshot => "page.snapshot",
             RabbitMessageKind::Steps => "steps",
             RabbitMessageKind::Prompt => "prompt",
+            RabbitMessageKind::TurnComplete => "turn.complete",
         }
     }
 }

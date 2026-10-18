@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::time::Duration;
+ use std::time::Duration;
 
 use lapin::options::{BasicAckOptions, BasicGetOptions};
 use lapin::{Connection, ConnectionProperties};

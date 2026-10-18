@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use shared::{
     BrowserBatchInput, ChromeToolInput, ComputerAction, ComputerInput, HookEvent,
-    PostToolUseRequest, SessionEndRequest,
+    PostToolUseRequest, SessionEndRequest, StopRequest,
 };
 
 mod elements;
@@ -43,6 +43,7 @@ fn run() -> Result<(), CaptureError> {
     match &event {
         HookEvent::PostToolUse(request) => handle_post_tool_use(request),
         HookEvent::SessionEnd(request) => handle_session_end(request),
+        HookEvent::Stop(request) => handle_stop(request),
         _ => {}
     }
 
@@ -71,6 +72,19 @@ fn handle_session_end(request: &SessionEndRequest) {
         request.common.session_id, request.reason
     );
     redis_store::delete_session_maps(&request.common.session_id);
+}
+
+fn handle_stop(request: &StopRequest) {
+    eprintln!(
+        "capture: stop session={} (turn complete)",
+        request.common.session_id
+    );
+    rabbitmq::publish_blocking(
+        &request.common.session_id,
+        "stop",
+        shared::rabbitmq::RabbitMessageKind::TurnComplete,
+        &serde_json::json!({ "last_assistant_message": request.last_assistant_message }),
+    );
 }
 
 // Shared by the top-level PostToolUse dispatch and by browser_batch's inner actions -
