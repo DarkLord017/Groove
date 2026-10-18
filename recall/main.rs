@@ -100,6 +100,11 @@ fn run() -> Result<(), RecallError> {
         HookEvent::UserPromptSubmit(request) => {
             let prompt = request.prompt.clone();
 
+            // Cache every prompt regardless of whether it touches claude-in-chrome -
+            // this is just a rolling recent-message window, independent of rabbitmq
+            // routing below.
+            redis_store::save_prompt(&request.common.session_id, &prompt);
+
             // Check first whether this prompt will even touch claude-in-chrome. Only
             // if it will do we publish it and look up a hint - no point queuing or
             // recall-ing for a prompt that was never going to invoke the browser.

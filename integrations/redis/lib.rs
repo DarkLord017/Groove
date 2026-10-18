@@ -3,6 +3,11 @@ use shared::PageElement;
 
 const ELEMENTS_TTL_SECONDS: usize = 30 * 60;
 const FOCUS_TTL_SECONDS: usize = 60 * 60;
+const PROMPTS_TTL_SECONDS: usize = 60 * 60;
+
+// Kept one bigger than the largest window anything reads (6) so a reader can still see
+// a full window's worth of prompts even if the background consumer is a message behind.
+const PROMPTS_BUFFER_SIZE: isize = 8;
 
 fn connection_url() -> String {
     std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string())
@@ -22,6 +27,10 @@ fn elements_key(session_id: &str, tab_id: Option<f64>) -> String {
 
 fn focus_key(session_id: &str, tab_id: f64) -> String {
     format!("focus:{session_id}:{tab_id}")
+}
+
+fn prompts_key(session_id: &str) -> String {
+    format!("prompts:{session_id}")
 }
 
 pub fn cache_elements(session_id: &str, tab_id: Option<f64>, elements: &[PageElement]) {
@@ -102,6 +111,40 @@ pub fn delete_tab_maps(session_id: &str, tab_id: f64) {
 
     if let Err(err) = result {
         eprintln!("capture: redis delete_tab_maps failed for {elements}/{focus}: {err}");
+    }
+}
+
+pub fn save_prompt(session_id: &str, prompt: &str) {
+    let key = prompts_key(session_id);
+    let result: redis::RedisResult<()> = (|| {
+        let mut conn = connect()?;
+        conn.lpush::<_, _, ()>(&key, prompt)?;
+        conn.ltrim::<_, ()>(&key, 0, PROMPTS_BUFFER_SIZE - 1)?;
+        conn.expire::<_, ()>(&key, PROMPTS_TTL_SECONDS as i64)?;
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        eprintln!("recall: redis save_prompt failed for {key}: {err}");
+    }
+}
+
+// Returns up to `count` most recent prompts, newest first. Callers asking for the usual
+// 5-6 message window still get it even though the buffer stores a couple extra - that
+// slack is there for a background consumer that hasn't caught up yet, not for readers.
+pub fn get_recent_prompts(session_id: &str, count: isize) -> Vec<String> {
+    let key = prompts_key(session_id);
+    let result: redis::RedisResult<Vec<String>> = (|| {
+        let mut conn = connect()?;
+        conn.lrange(&key, 0, count - 1)
+    })();
+
+    match result {
+        Ok(prompts) => prompts,
+        Err(err) => {
+            eprintln!("recall: redis get_recent_prompts failed for {key}: {err}");
+            Vec::new()
+        }
     }
 }
 

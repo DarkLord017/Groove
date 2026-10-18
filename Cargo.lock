@@ -1315,6 +1315,7 @@ name = "recall"
 version = "0.1.0"
 dependencies = [
  "rabbitmq",
+ "redis_store",
  "regex",
  "serde",
  "serde_json",
