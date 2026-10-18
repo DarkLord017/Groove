@@ -1,3 +1,4 @@
 System Design 
 
-<img width="2600" height="1482" alt="image" src="https://github.com/user-attachments/assets/acdee6c8-13c8-4556-81ec-3bdec3f758da" />
+<img width="1900" height="1340" alt="image" src="https://github.com/user-attachments/assets/39a361e4-b224-4812-8f47-5f2927094544" />
+
