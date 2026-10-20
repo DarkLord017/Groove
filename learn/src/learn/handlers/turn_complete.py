@@ -9,11 +9,9 @@ class TurnCompleteHandler(EventHandler):
 
     def handle(self, session_id: str, label: str, payload: dict) -> None:
         last_assistant_message = payload.get("last_assistant_message", "")
-        jev_session.append_work(session_id, f"{label}: {last_assistant_message}")
-
-        objective, completed_work = jev_session.peek(session_id)
+        objective, steps = jev_session.peek(session_id)
         try:
-            decision = jev.review_completion(objective, "\n".join(completed_work))
+            decision = jev.review_completion(objective, steps, last_assistant_message)
         except TransientFailure:
             # Leave the accumulated state in place - a message requeue (consumer.py's
             # own backoff) will retry with full context instead of an empty one.
