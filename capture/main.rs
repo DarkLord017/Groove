@@ -270,10 +270,18 @@ fn cache_elements(
         );
         return;
     };
-    if let Some(text) = tool_response.as_str() {
-        let found = elements::parse_elements(text);
-        redis_store::cache_elements(session_id, Some(tab_id), &found);
-    }
+    
+    let text = match tool_response {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(_) => extract_batch_text_blocks(tool_response).join("\n"),
+        _ => {
+            eprintln!("capture: [cache] {tool_name} tool_response was neither a string nor an array - skipping cache");
+            return;
+        }
+    };
+
+    let found = elements::parse_elements(&text);
+    redis_store::cache_elements(session_id, Some(tab_id), &found);
 }
 
 fn resolve_ref(session_id: &str, tab_id: f64, ref_id: &str) {

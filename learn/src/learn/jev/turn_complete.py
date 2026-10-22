@@ -1,7 +1,8 @@
-from learn import jev, jev_session
+from learn import rabbitmq
 from learn.errors import TransientFailure
 from learn.handlers.base import EventHandler
-from learn.neo4j_store import store_event
+from learn.jev import client as jev
+from learn.jev import session as jev_session
 
 
 class TurnCompleteHandler(EventHandler):
@@ -12,9 +13,14 @@ class TurnCompleteHandler(EventHandler):
         objective, steps = jev_session.peek(session_id)
         try:
             decision = jev.review_completion(objective, steps, last_assistant_message)
+            # Publish the verdict as its own message instead of acting on it here -
+            # JudgeResultHandler picks it up and decides what happens next (e.g.
+            # whether field_pairs is worth processing).
+            rabbitmq.publish(session_id, "judge.result", "jev_review_completion", {"decision": decision})
         except TransientFailure:
-            # Leave the accumulated state in place - a message requeue (consumer.py's
-            # own backoff) will retry with full context instead of an empty one.
+            # Leave jev_session in place - a message requeue (consumer.py's own
+            # backoff) will retry with full context instead of an empty one. Re-calling
+            # JEV on retry is harmless besides cost.
             raise
         except Exception:
             jev_session.clear(session_id)
@@ -22,6 +28,3 @@ class TurnCompleteHandler(EventHandler):
 
         jev_session.clear(session_id)
         print(f"learn: jev decision for session={session_id}: {decision}")
-
-        store_event(session_id, self.KIND, label, payload)
-        store_event(session_id, "judge.result", "jev_review_completion", decision)

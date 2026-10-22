@@ -8,9 +8,11 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
-    "neo4j>=6.4.1",
     "pika>=1.4.4",
+    "qdrant-client>=1.20.0",
+    "rapidfuzz>=3.14.6",
     "redis>=5.2.1",
+    "sentence-transformers>=6.2.0",
 ]
 
 [project.scripts]

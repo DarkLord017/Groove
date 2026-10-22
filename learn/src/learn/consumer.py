@@ -3,6 +3,7 @@ import os
 
 import pika
 
+from learn import session_queue
 from learn.errors import TransientFailure
 from learn.handlers import HANDLERS
 
@@ -27,6 +28,7 @@ def handle_message(channel, method, _properties, body) -> None:
         return
 
     session_id = msg.get("session_id")
+    session_queue.remember(session_id, msg.get("queue"))
     try:
         handler.handle(session_id, msg.get("label", ""), msg.get("payload", {}))
         channel.basic_ack(delivery_tag=method.delivery_tag)

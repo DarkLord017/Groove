@@ -1,6 +1,5 @@
-from learn import jev_session
 from learn.handlers.base import EventHandler
-from learn.neo4j_store import store_event
+from learn.jev import session as jev_session
 
 
 class PromptHandler(EventHandler):
@@ -8,4 +7,3 @@ class PromptHandler(EventHandler):
 
     def handle(self, session_id: str, label: str, payload: dict) -> None:
         jev_session.set_objective(session_id, payload.get("prompt", ""))
-        store_event(session_id, self.KIND, label, payload)

@@ -6,11 +6,8 @@ import redis
 from learn.errors import TransientFailure
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/")
-TTL_SECONDS = 60 * 60  # generous upper bound on how long a single run should take
+TTL_SECONDS = 60 * 60 
 
-# Bounds on what gets sent to JEV - a long run shouldn't be able to build an unbounded
-# request (JEV caps request bodies at 32 KiB). Keeps the most recent steps, since
-# they're the most relevant to judging the run's actual outcome.
 JEV_MAX_STEPS = 20
 JEV_MAX_STEP_LENGTH = 500
 
@@ -48,11 +45,25 @@ def summarize_step(label: str, payload: dict) -> str:
     happened); otherwise falls back to the raw payload. Truncated to JEV_MAX_STEP_LENGTH
     so one chatty tool response can't dominate the request on its own.
     """
-    tool_response = payload.get("tool_response")
-    line = f"{label}: {tool_response}" if tool_response is not None else f"{label}: {payload}"
+    text = _tool_response_text(payload.get("tool_response"))
+    line = f"{label}: {text}" if text is not None else f"{label}: {payload}"
     if len(line) > JEV_MAX_STEP_LENGTH:
         line = line[:JEV_MAX_STEP_LENGTH] + "...(truncated)"
     return line
+
+
+def _tool_response_text(tool_response) -> str | None:
+    """Real Claude Code tool_response is a list of content blocks
+    ([{"type": "text", "text": "..."}, ...]), not a plain string - joins their text
+    together instead of stringifying the raw list. A plain string (synthetic/test
+    input, or an already-flattened batch response) passes through unchanged.
+    """
+    if isinstance(tool_response, str):
+        return tool_response
+    if isinstance(tool_response, list):
+        texts = [block["text"] for block in tool_response if isinstance(block, dict) and isinstance(block.get("text"), str)]
+        return "\n".join(texts) if texts else None
+    return None
 
 
 def peek(session_id: str) -> tuple[str, list[str]]:

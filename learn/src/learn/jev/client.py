@@ -1,10 +1,3 @@
-"""Client for Jev via OpenRouter's decisions endpoint (not jevai.org directly - OpenRouter
-hosts the real typed-decisions model at /api/alpha/decisions, confirmed working with a
-real OPENROUTER_API_KEY; the model only works there, not on /chat/completions).
-Called once per run, from TurnCompleteHandler, with the objective/steps built up over
-the session by jev_session plus the run's own final message.
-"""
-
 import os
 import time
 
@@ -18,6 +11,7 @@ JEV_MODEL = "typesafe/jev-1.13"  # pinned version, not a -latest alias
 JEV_TIMEOUT_SECONDS = 10.0
 JEV_MAX_ATTEMPTS = int(os.environ.get("JEV_MAX_ATTEMPTS", "4"))
 JEV_BACKOFF_BASE_SECONDS = float(os.environ.get("JEV_BACKOFF_BASE_SECONDS", "1"))
+JEV_SUCCESS_THRESHOLD = float(os.environ.get("JEV_SUCCESS_THRESHOLD", "0.5"))
 
 
 def _post_once(state: dict, questions: dict) -> dict:
@@ -74,3 +68,14 @@ def review_completion(objective: str, steps: list[str], agent_message: str) -> d
                 time.sleep(backoff)
 
     raise TransientFailure(f"JEV call failed after {JEV_MAX_ATTEMPTS} attempts: {last_error}") from last_error
+
+
+def indicates_success(decision: dict) -> bool:
+    """True if JEV's "success" answer clears JEV_SUCCESS_THRESHOLD. A missing or
+    malformed answer counts as not successful - better to skip learning from a run
+    than to learn from one JEV couldn't actually judge.
+    """
+    try:
+        return decision["answers"]["success"]["noul"] >= JEV_SUCCESS_THRESHOLD
+    except (KeyError, TypeError):
+        return False
