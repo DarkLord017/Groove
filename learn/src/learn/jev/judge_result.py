@@ -1,4 +1,4 @@
-from learn import field_pairs
+from learn import facts, field_pairs, tasks
 from learn.handlers.base import EventHandler
 from learn.jev import client as jev
 
@@ -12,11 +12,13 @@ class JudgeResultHandler(EventHandler):
         if jev.indicates_success(decision):
             pairs = field_pairs.peek(session_id)
             if pairs:
-                print(f"learn: field pairs for session={session_id}: {pairs}")
-                # Linking these pairs back to the user's own prompt wording (e.g.
-                # "home" -> "Destination" -> "Roorkee") needs an LLM judgment call or a
-                # timing-based heuristic - GLiNER can't do it (benchmarked: it only
-                # tags real named entities, never generic/anaphoric words like "home").
-                # Skipped for v1 - the pairs themselves are still useful without it.
+                classification = jev.classify_pairs(pairs)
+                for i, pair in enumerate(pairs):
+                    kind = jev.pair_classification(classification, i)
+                    if kind == "personal":
+                        facts.save(pair["key"], pair["value"])
+                    elif kind == "task":
+                        tasks.observe(f"{pair['key']}: {pair['value']}")
+                    # "not_needed", or a missing/malformed classification -> skip.
 
         field_pairs.clear(session_id)

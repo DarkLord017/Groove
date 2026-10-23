@@ -19,6 +19,17 @@ services:
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
 
+  qdrant:
+    image: qdrant/qdrant
+    container_name: groove-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
 volumes:
   redis-data:
   rabbitmq-data:
+  qdrant-data:
