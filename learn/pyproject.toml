@@ -7,12 +7,15 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "en-core-web-sm",
     "httpx>=0.28.1",
     "pika>=1.4.4",
     "qdrant-client>=1.20.0",
+    "rank-bm25>=0.2.2",
     "rapidfuzz>=3.14.6",
     "redis>=5.2.1",
     "sentence-transformers>=6.2.0",
+    "spacy>=3.8.16",
 ]
 
 [project.scripts]
@@ -21,3 +24,6 @@ learn = "learn:main"
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
