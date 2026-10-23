@@ -67,7 +67,12 @@ def review_completion(objective: str, steps: list[str], agent_message: str) -> d
                 "Given the objective, the steps actually taken, and the agent's own "
                 "final message, estimate the probability that the run successfully "
                 "achieved the objective. Trust the steps over the agent's own claim "
-                "if they disagree."
+                "if they disagree. A genuine best-effort answer under real-world "
+                "ambiguity - naming a clear recommended option while also noting "
+                "legitimate alternatives or caveats - still counts as success if it "
+                "substantively addresses the objective. Do not penalize the agent for "
+                "surfacing extra relevant options or honest caveats; only score it as "
+                "a failure if the objective was not actually addressed at all."
             ),
         }
     }

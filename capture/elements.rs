@@ -9,6 +9,11 @@
 //   form [ref_7]                          <- no quoted name on every element
 // find lines look like:
 //   - ref_2: textbox "OTP" (text) - Exact match - textbox with label "OTP"
+// find has also been observed doubling the name's quotes on a real page:
+//   - ref_853: checkbox ""Non Stop"" (checkbox) - Matches "Non Stop filter checkbox" - ...
+// A single "([^"]*)" only matches the first, adjacent quote pair in that case and
+// captures an empty name - "+ allows either form without over-matching a normal
+// single-quoted name.
 
 use std::sync::LazyLock;
 
@@ -16,10 +21,10 @@ use regex::Regex;
 use shared::PageElement;
 
 static READ_PAGE_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^\s*(\S+)(?:\s+"([^"]*)")?\s+\[(ref_\d+)\]"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"^\s*(\S+)(?:\s+"+([^"]*)"+)?\s+\[(ref_\d+)\]"#).unwrap());
 
 static FIND_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"^-\s*(ref_\d+):\s*(\S+)\s+"([^"]*)""#).unwrap());
+    LazyLock::new(|| Regex::new(r#"^-\s*(ref_\d+):\s*(\S+)\s+"+([^"]*)"+"#).unwrap());
 
 pub fn parse_elements(text: &str) -> Vec<PageElement> {
     let mut elements = Vec::new();
@@ -110,5 +115,23 @@ mod tests {
     fn ignores_unrelated_text() {
         let elements = parse_elements("just some unrelated page text\nwith no refs at all");
         assert!(elements.is_empty());
+    }
+
+    #[test]
+    fn parses_find_output_with_doubled_name_quotes() {
+        // Captured verbatim from a real find call against makemytrip.com.
+        let text = "Found 3 matching elements\n\n\
+                     - ref_853: checkbox \"\"Non Stop\"\" (checkbox) - Matches \"Non Stop filter checkbox\" - this is the Non Stop checkbox in the Popular Filters section\n\
+                     - ref_859: checkbox \"\"Student Fares\"\" (checkbox) - Located in filters but does not match departure time filters\n\
+                     - ref_935: checkbox \"\"Check-in Baggage only\"\" (checkbox) - Located in Baggage section but does not match the requested filters";
+        let elements = parse_elements(text);
+        assert_eq!(
+            elements,
+            vec![
+                element("ref_853", "checkbox \"Non Stop\""),
+                element("ref_859", "checkbox \"Student Fares\""),
+                element("ref_935", "checkbox \"Check-in Baggage only\""),
+            ]
+        );
     }
 }
