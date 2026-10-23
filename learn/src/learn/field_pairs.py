@@ -53,7 +53,7 @@ def observe_step(session_id: str, payload: dict) -> None:
             if label:
                 existing_keys = list(dict.fromkeys(p["key"] for p in peek(session_id)))
                 key = key_match.find_match(label, existing_keys) or label
-                _client.rpush(_pairs_key(session_id), json.dumps({"key": key, "value": value}))
+                _client.rpush(_pairs_key(session_id), json.dumps({"key": key, "value": value.lower()}))
                 _client.expire(_pairs_key(session_id), TTL_SECONDS)
     except redis.RedisError as e:
         raise TransientFailure(f"field_pairs observe_step failed: {e}") from e

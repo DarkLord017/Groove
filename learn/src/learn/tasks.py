@@ -47,6 +47,7 @@ def observe(objective: str) -> None:
     if not objective:
         return
 
+    objective = objective.lower()
     resolved = key_match.find_match(objective, known_tasks()) or objective
     try:
         count = _redis.hincrby(TASKS_KEY, resolved, 1)
