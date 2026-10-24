@@ -158,3 +158,67 @@ def pair_classification(decision: dict, index: int) -> str | None:
         return decision["answers"][f"pair_{index}"]["choice"]
     except (KeyError, TypeError):
         return None
+
+
+# A fixed, reusable set of generic task stages - not free text, so the same subgoal
+# recurring across different runs (even different sites) lands on the same Stage node
+# instead of each run minting its own one-off label and fragmenting the tree. This
+# mirrors the Hierarchical Memory Tree's "reusable semantic subgoal" idea.
+STAGE_CRITERIA = {
+    "enter_criteria": (
+        "the user is providing an input value the task needs - typing into a field, "
+        "picking from a combobox/dropdown, choosing a date - to define what to "
+        "search/book/look up. Example: key='textbox \"Origin\"', value='mumbai'."
+    ),
+    "apply_filter": (
+        "the user is narrowing down results already visible or about to be fetched - "
+        "toggling a checkbox filter (e.g. 'non-stop only'), or a sort/display option, "
+        "rather than providing a core search criterion."
+    ),
+    "select_option": (
+        "the user picks one specific item out of a list or dropdown of options that "
+        "was shown to them after a prior action - e.g. choosing a specific airport from "
+        "a suggestion popup, or a specific result from a list."
+    ),
+    "other": (
+        "none of the above apply, or the pair doesn't clearly fit a reusable subgoal."
+    ),
+}
+
+STAGE_CLASSIFICATION_STEPS = (
+    "Classify this one key/value pair into exactly one of the stage categories above, "
+    "based on what the action itself does, not on what site or task it's part of."
+)
+
+
+def classify_stages(pairs: list[dict]) -> dict:
+    """Asks Jev to classify each {key, value} pair into one of STAGE_CRITERIA's fixed
+    stage categories - one call per run, same pattern as classify_pairs. Used to
+    segment a run's field_pairs into Stage occurrences for the site tree.
+    """
+    if not pairs:
+        return {}
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set - cannot call JEV")
+
+    state = {"pairs": pairs}
+    questions = {
+        f"pair_{i}": {
+            "type": "choice",
+            "criteria": STAGE_CRITERIA,
+            "instructions": (
+                f"Classify state.pairs[{i}] (key={pair['key']!r}, value={pair['value']!r}). "
+                f"{STAGE_CLASSIFICATION_STEPS}"
+            ),
+        }
+        for i, pair in enumerate(pairs)
+    }
+    return _call_with_retry(state, questions)
+
+
+def stage_classification(decision: dict, index: int) -> str | None:
+    """Reads back pair_<index>'s stage label. None if missing/malformed."""
+    try:
+        return decision["answers"][f"pair_{index}"]["choice"]
+    except (KeyError, TypeError):
+        return None

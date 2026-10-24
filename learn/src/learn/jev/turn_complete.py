@@ -1,4 +1,4 @@
-from learn import rabbitmq
+from learn import rabbitmq, site_tree
 from learn.errors import TransientFailure
 from learn.handlers.base import EventHandler
 from learn.jev import client as jev
@@ -11,12 +11,19 @@ class TurnCompleteHandler(EventHandler):
     def handle(self, session_id: str, label: str, payload: dict) -> None:
         last_assistant_message = payload.get("last_assistant_message", "")
         objective, steps = jev_session.peek(session_id)
+        domain = site_tree.get_domain(session_id)
         try:
             decision = jev.review_completion(objective, steps, last_assistant_message)
             # Publish the verdict as its own message instead of acting on it here -
             # JudgeResultHandler picks it up and decides what happens next (e.g.
-            # whether field_pairs is worth processing).
-            rabbitmq.publish(session_id, "judge.result", "jev_review_completion", {"decision": decision})
+            # whether field_pairs/site_tree is worth processing). objective/domain
+            # ride along since jev_session/site_tree's own session state is cleared
+            # right below, before JudgeResultHandler would otherwise get to read it.
+            rabbitmq.publish(session_id, "judge.result", "jev_review_completion", {
+                "decision": decision,
+                "objective": objective,
+                "domain": domain,
+            })
         except TransientFailure:
             # Leave jev_session in place - a message requeue (consumer.py's own
             # backoff) will retry with full context instead of an empty one. Re-calling

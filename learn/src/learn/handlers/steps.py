@@ -1,4 +1,4 @@
-from learn import field_pairs
+from learn import field_pairs, site_tree
 from learn.handlers.base import EventHandler
 from learn.jev import session as jev_session
 
@@ -20,4 +20,7 @@ class StepsHandler(EventHandler):
         # the first would otherwise waste a slot dumping the raw, incomplete payload.
         if payload.get("tool_response") is not None:
             jev_session.append_work(session_id, jev_session.summarize_step(label, payload))
+            navigate = payload.get("tool_input", {}).get("Navigate")
+            if navigate and navigate.get("url"):
+                site_tree.set_domain(session_id, navigate["url"])
         field_pairs.observe_step(session_id, payload)
