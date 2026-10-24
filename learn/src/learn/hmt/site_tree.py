@@ -11,7 +11,7 @@ from rapidfuzz import fuzz
 
 from learn import key_match
 from learn.errors import TransientFailure
-from learn.jev import client as jev
+from learn.hmt import stage_llm
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
@@ -150,26 +150,6 @@ def _resolve_intent(domain: str, objective: str) -> str:
     return resolved
 
 
-def _group_by_boundaries(pairs: list[dict], classification: dict) -> list[list[dict]]:
-    """Groups pairs into stage occurrences using Jev's boundary decisions (made with
-    the whole pair sequence as context, not pair-by-pair in isolation - see
-    jev.classify_pairs). Pair 0 always starts the first group; any later pair marked
-    "new_stage" starts a new group, otherwise it continues the current one. A
-    missing/malformed boundary answer defaults to "same_stage" - merging wrongly is
-    less damaging than splitting wrongly (an extra entry in one stage's example vs. a
-    fragmented, half-formed stage node).
-    """
-    if not pairs:
-        return []
-    groups: list[list[dict]] = [[pairs[0]]]
-    for i in range(1, len(pairs)):
-        if jev.pair_boundary(classification, i) == "new_stage":
-            groups.append([pairs[i]])
-        else:
-            groups[-1].append(pairs[i])
-    return groups
-
-
 def _known_stage_labels(domain: str, intent: str) -> list[str]:
     points, _ = _qdrant.scroll(
         collection_name=STAGES_COLLECTION,
@@ -184,14 +164,14 @@ def _known_stage_labels(domain: str, intent: str) -> list[str]:
     return [p.payload["stage"] for p in points]
 
 
-def _resolve_stage_label(domain: str, intent: str, actions: list[dict]) -> str:
-    """A stage has no fixed name - its identity is whatever previously stored stage
-    (for this exact domain+intent) it's similar enough to, same resolution pattern as
-    _resolve_intent/facts/tasks. A brand new kind of stage just becomes its own label,
-    built from the keys it touched (e.g. 'textbox "origin" / textbox "destination"').
+def _resolve_stage_label(domain: str, intent: str, proposed_name: str) -> str:
+    """stage_llm proposes a real name per call, but different calls can word the
+    SAME underlying sub-goal slightly differently - resolving it against previously
+    stored stages (for this exact domain+intent) via key_match, same pattern as
+    _resolve_intent/facts/tasks, collapses those onto one node instead of each call
+    minting a near-duplicate.
     """
-    candidate = " / ".join(a["key"] for a in actions)
-    return key_match.find_match(candidate, _known_stage_labels(domain, intent)) or candidate
+    return key_match.find_match(proposed_name, _known_stage_labels(domain, intent)) or proposed_name
 
 
 def _occurrence_values(actions: list[dict]) -> str:
@@ -236,26 +216,38 @@ MIN_MARGIN = 0.1  # delta: top1 - top2 must clear this
 MIN_CONFIDENCE = 0.15  # tau: top1 itself must clear this
 
 
-def _cond_match(pre_condition: str, completed_stages: list[str]) -> float:
-    """HMT's CondMatch is a Jaccard overlap between free-text conditions. Our Stage
-    labels are categorical, not free text, so the faithful version of "does this
-    candidate's precondition hold" is exact set membership rather than fuzzy token
-    overlap: 1.0 if its pre_condition already happened (or is "start" and nothing has
-    happened yet), 0.0 otherwise.
+def _jaccard(a: str, b: str) -> float:
+    tokens_a, tokens_b = set(a.lower().split()), set(b.lower().split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+
+def _cond_match(pre_condition: str, completed_post_conditions: list[str]) -> float:
+    """HMT's actual CondMatch: Jaccard word-overlap between a candidate's
+    pre_condition sentence and the post_condition sentences of stages already
+    completed this run - real text comparison, now that stage_llm gives us real
+    condition sentences instead of a neighbor-stage name. Empty (nothing completed
+    yet, e.g. the first stage of a run) scores 0 - nothing to match against, so
+    selection falls back to pure semantic similarity for that case.
     """
-    if pre_condition == "start":
-        return 1.0 if not completed_stages else 0.0
-    return 1.0 if pre_condition in completed_stages else 0.0
+    if not completed_post_conditions:
+        return 0.0
+    return max(_jaccard(pre_condition, cond) for cond in completed_post_conditions)
 
 
-def select_stage(domain: str, intent: str, completed_stages: list[str]) -> tuple[dict | None, float]:
-    """The Planner: given what's already been done this run (completed_stages, in
-    order), picks which Stage node is most likely next. Returns (None, confidence) if
-    the top candidate isn't clearly ahead of the runner-up or isn't confident enough
-    on its own - callers should fall back to no-hint rather than guess. Not wired to
-    any hook yet - this is the selection logic on its own, for recall to call later.
+def select_stage(domain: str, intent: str, completed: list[dict]) -> tuple[dict | None, float]:
+    """The Planner: given the stages already done this run (completed - a list of
+    {"stage": name, "post_condition": text} dicts, in order), picks which Stage node
+    is most likely next. Returns (None, confidence) if the top candidate isn't
+    clearly ahead of the runner-up or isn't confident enough on its own - callers
+    should fall back to no-hint rather than guess. Not wired to any hook yet - this
+    is the selection logic on its own, for recall to call later.
     """
     domain = domain.lower()
+    completed_names = [c["stage"] for c in completed]
+    completed_posts = [c["post_condition"] for c in completed]
+
     query_vector = key_match._bi_model.encode(f"{domain} | {intent}", normalize_embeddings=True).tolist()
     hits = _qdrant.query_points(
         collection_name=STAGES_COLLECTION,
@@ -270,13 +262,13 @@ def select_stage(domain: str, intent: str, completed_stages: list[str]) -> tuple
     # A stage already done this run isn't a candidate for "what's next" - without this,
     # an already-finished stage can still score cond_match=1.0 (its OWN precondition
     # is satisfied) and tie with the real next stage.
-    candidates = [hit for hit in hits if hit.payload["stage"] not in completed_stages]
+    candidates = [hit for hit in hits if hit.payload["stage"] not in completed_names]
     if not candidates:
         return None, 0.0
 
     scored = sorted(
         (
-            ((1 - COND_MATCH_WEIGHT) * hit.score + COND_MATCH_WEIGHT * _cond_match(hit.payload["pre_condition"], completed_stages), hit.payload)
+            ((1 - COND_MATCH_WEIGHT) * hit.score + COND_MATCH_WEIGHT * _cond_match(hit.payload["pre_condition"], completed_posts), hit.payload)
             for hit in candidates
         ),
         key=lambda s: s[0],
@@ -303,21 +295,25 @@ def ground_action(stored_label: str, live_labels: list[str]) -> str | None:
     return key_match.find_match(stored_label, live_labels)
 
 
-def record_run(domain: str, objective: str, pairs: list[dict], classification: dict) -> None:
-    """Called once per successful run (from JudgeResultHandler), on the same
-    field_pairs AND the same Jev classification decision its personal/task
-    classification already used (classification carries the pair_<i>_boundary
-    answers too - see jev.classify_pairs). Resolves the run's Intent node, groups its
-    pairs into stage occurrences by Jev's boundary calls, resolves each group's
-    identity by similarity to previously stored stages (not a fixed name), and
-    upserts each one - a new stage creates a node, a repeat increments its count and
-    rolls a bounded history of example occurrences.
+def record_run(domain: str, objective: str, pairs: list[dict]) -> None:
+    """Called once per successful run (from JudgeResultHandler) on the run's
+    field_pairs. Resolves the run's Intent node, then asks stage_llm - a real LLM
+    call over OpenRouter, not Jev's bounded decisions API - to segment the pairs
+    into stages with real semantic names and pre/post-condition sentences (HMT's
+    actual Subgoal Segmentation step). Each stage's proposed name is resolved
+    against previously stored stages for this domain+intent before saving, so
+    repeats collapse onto the same node instead of fragmenting by wording.
+    Skips recording entirely if the segmenter call fails or returns something
+    malformed - better to record nothing than record a broken structure.
     """
     domain = domain.lower()
     intent = _resolve_intent(domain, objective)
-    groups = _group_by_boundaries(pairs, classification)
-    labels = [_resolve_stage_label(domain, intent, actions) for actions in groups]
-    for idx, (stage, actions) in enumerate(zip(labels, groups)):
-        pre = labels[idx - 1] if idx > 0 else "start"
-        post = labels[idx + 1] if idx + 1 < len(groups) else "end"
-        _save_stage(domain, intent, stage, pre, post, actions)
+
+    segments = stage_llm.segment_pairs(intent, pairs)
+    if not segments:
+        return
+
+    for segment in segments:
+        actions = [pairs[i] for i in segment["pair_indices"]]
+        stage = _resolve_stage_label(domain, intent, segment["name"])
+        _save_stage(domain, intent, stage, segment["pre_condition"], segment["post_condition"], actions)

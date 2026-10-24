@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "learn" / "src"))
 
-from learn import site_tree  # noqa: E402
+from learn.hmt import site_tree  # noqa: E402
 from qdrant_client.http import models  # noqa: E402
 
 SAME_INTENT_GROUPS = {

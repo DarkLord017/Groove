@@ -1,5 +1,6 @@
-from learn import field_pairs, site_tree
+from learn import field_pairs
 from learn.handlers.base import EventHandler
+from learn.hmt import site_tree
 from learn.jev import session as jev_session
 
 

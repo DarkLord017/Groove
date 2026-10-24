@@ -1,5 +1,6 @@
-from learn import facts, field_pairs, site_tree, tasks
+from learn import facts, field_pairs, tasks
 from learn.handlers.base import EventHandler
+from learn.hmt import site_tree
 from learn.jev import client as jev
 
 
@@ -25,7 +26,6 @@ class JudgeResultHandler(EventHandler):
                     payload.get("domain") or "unknown",
                     payload.get("objective") or "",
                     pairs,
-                    classification,
                 )
 
         field_pairs.clear(session_id)

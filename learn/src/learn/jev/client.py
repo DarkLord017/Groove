@@ -126,27 +126,16 @@ PAIR_CLASSIFICATION_STEPS = (
 )
 
 
-# No fixed vocabulary for stages (unlike PAIR_CLASSIFICATION_CRITERIA's personal/
-# task/not_needed) - a stage's identity is decided later by semantic similarity to
-# previously stored stages (site_tree._resolve_stage_label), the same way facts/
-# tasks/intents already work. This only decides WHERE one stage ends and the next
-# begins; it doesn't name anything. Jev sees the whole pairs sequence as context for
-# every question, so a boundary call isn't just "compare these two pairs in
-# isolation" - it can reason about the pair's role in the full run.
-STAGE_BOUNDARY_CRITERIA = {
-    "same_stage": "this pair continues the same sub-goal as the pair right before it.",
-    "new_stage": "this pair starts a new, distinct sub-goal compared to the pair right before it.",
-}
-
-
 def classify_pairs(pairs: list[dict]) -> dict:
-    """Asks Jev to classify each {key, value} pair as personal / task / not_needed,
-    AND (same call, same state, extra questions - not a second request) where one
-    stage ends and the next begins for site_tree's Stage segmentation. One call
-    covers every pair instead of one call per pair, and bundling both question sets
-    into this single call keeps a run at 2 total Jev calls (this + review_completion)
-    instead of 3. Returns the raw decision dict - read it back with
-    pair_classification/pair_boundary.
+    """Asks Jev to classify each {key, value} pair as personal / task / not_needed.
+    One call covers every pair (questions pair_0, pair_1, ...) instead of one call
+    per pair. Returns the raw decision dict - read it back with pair_classification.
+
+    Stage segmentation used to piggyback on this same call (a pair_<i>_boundary
+    question per pair), but that only gave Jev's bounded choice API, which can't
+    generate free text - see learn.hmt.stage_llm for the real-LLM replacement that
+    segments pairs into stages AND writes real semantic names/conditions, not just a
+    same/new-stage flag.
     """
     if not pairs:
         return {}
@@ -165,18 +154,6 @@ def classify_pairs(pairs: list[dict]) -> dict:
         }
         for i, pair in enumerate(pairs)
     }
-    for i in range(1, len(pairs)):
-        questions[f"pair_{i}_boundary"] = {
-            "type": "choice",
-            "criteria": STAGE_BOUNDARY_CRITERIA,
-            "instructions": (
-                f"Compare state.pairs[{i}] (key={pairs[i]['key']!r}, value={pairs[i]['value']!r}) "
-                f"to the pair right before it, state.pairs[{i - 1}] "
-                f"(key={pairs[i - 1]['key']!r}, value={pairs[i - 1]['value']!r}). "
-                "Does pair i begin a new stage of the task, or continue the same stage "
-                "as pair i-1?"
-            ),
-        }
     return _call_with_retry(state, questions)
 
 
@@ -185,14 +162,5 @@ def pair_classification(decision: dict, index: int) -> str | None:
     callers should treat that the same as not_needed (skip it) rather than guess."""
     try:
         return decision["answers"][f"pair_{index}"]["choice"]
-    except (KeyError, TypeError):
-        return None
-
-
-def pair_boundary(decision: dict, index: int) -> str | None:
-    """Reads back whether pair_<index> starts a new stage. None if missing/malformed -
-    callers should treat that as "same_stage" (merge rather than wrongly split)."""
-    try:
-        return decision["answers"][f"pair_{index}_boundary"]["choice"]
     except (KeyError, TypeError):
         return None
