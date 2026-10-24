@@ -25,6 +25,7 @@ class JudgeResultHandler(EventHandler):
                     payload.get("domain") or "unknown",
                     payload.get("objective") or "",
                     pairs,
+                    classification,
                 )
 
         field_pairs.clear(session_id)

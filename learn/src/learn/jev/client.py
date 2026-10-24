@@ -126,10 +126,27 @@ PAIR_CLASSIFICATION_STEPS = (
 )
 
 
+# No fixed vocabulary for stages (unlike PAIR_CLASSIFICATION_CRITERIA's personal/
+# task/not_needed) - a stage's identity is decided later by semantic similarity to
+# previously stored stages (site_tree._resolve_stage_label), the same way facts/
+# tasks/intents already work. This only decides WHERE one stage ends and the next
+# begins; it doesn't name anything. Jev sees the whole pairs sequence as context for
+# every question, so a boundary call isn't just "compare these two pairs in
+# isolation" - it can reason about the pair's role in the full run.
+STAGE_BOUNDARY_CRITERIA = {
+    "same_stage": "this pair continues the same sub-goal as the pair right before it.",
+    "new_stage": "this pair starts a new, distinct sub-goal compared to the pair right before it.",
+}
+
+
 def classify_pairs(pairs: list[dict]) -> dict:
-    """Asks Jev to classify each {key, value} pair as personal / task / not_needed.
-    One call covers every pair (questions pair_0, pair_1, ...) instead of one call
-    per pair. Returns the raw decision dict - read it back with pair_classification.
+    """Asks Jev to classify each {key, value} pair as personal / task / not_needed,
+    AND (same call, same state, extra questions - not a second request) where one
+    stage ends and the next begins for site_tree's Stage segmentation. One call
+    covers every pair instead of one call per pair, and bundling both question sets
+    into this single call keeps a run at 2 total Jev calls (this + review_completion)
+    instead of 3. Returns the raw decision dict - read it back with
+    pair_classification/pair_boundary.
     """
     if not pairs:
         return {}
@@ -148,6 +165,18 @@ def classify_pairs(pairs: list[dict]) -> dict:
         }
         for i, pair in enumerate(pairs)
     }
+    for i in range(1, len(pairs)):
+        questions[f"pair_{i}_boundary"] = {
+            "type": "choice",
+            "criteria": STAGE_BOUNDARY_CRITERIA,
+            "instructions": (
+                f"Compare state.pairs[{i}] (key={pairs[i]['key']!r}, value={pairs[i]['value']!r}) "
+                f"to the pair right before it, state.pairs[{i - 1}] "
+                f"(key={pairs[i - 1]['key']!r}, value={pairs[i - 1]['value']!r}). "
+                "Does pair i begin a new stage of the task, or continue the same stage "
+                "as pair i-1?"
+            ),
+        }
     return _call_with_retry(state, questions)
 
 
@@ -160,65 +189,10 @@ def pair_classification(decision: dict, index: int) -> str | None:
         return None
 
 
-# A fixed, reusable set of generic task stages - not free text, so the same subgoal
-# recurring across different runs (even different sites) lands on the same Stage node
-# instead of each run minting its own one-off label and fragmenting the tree. This
-# mirrors the Hierarchical Memory Tree's "reusable semantic subgoal" idea.
-STAGE_CRITERIA = {
-    "enter_criteria": (
-        "the user is providing an input value the task needs - typing into a field, "
-        "picking from a combobox/dropdown, choosing a date - to define what to "
-        "search/book/look up. Example: key='textbox \"Origin\"', value='mumbai'."
-    ),
-    "apply_filter": (
-        "the user is narrowing down results already visible or about to be fetched - "
-        "toggling a checkbox filter (e.g. 'non-stop only'), or a sort/display option, "
-        "rather than providing a core search criterion."
-    ),
-    "select_option": (
-        "the user picks one specific item out of a list or dropdown of options that "
-        "was shown to them after a prior action - e.g. choosing a specific airport from "
-        "a suggestion popup, or a specific result from a list."
-    ),
-    "other": (
-        "none of the above apply, or the pair doesn't clearly fit a reusable subgoal."
-    ),
-}
-
-STAGE_CLASSIFICATION_STEPS = (
-    "Classify this one key/value pair into exactly one of the stage categories above, "
-    "based on what the action itself does, not on what site or task it's part of."
-)
-
-
-def classify_stages(pairs: list[dict]) -> dict:
-    """Asks Jev to classify each {key, value} pair into one of STAGE_CRITERIA's fixed
-    stage categories - one call per run, same pattern as classify_pairs. Used to
-    segment a run's field_pairs into Stage occurrences for the site tree.
-    """
-    if not pairs:
-        return {}
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set - cannot call JEV")
-
-    state = {"pairs": pairs}
-    questions = {
-        f"pair_{i}": {
-            "type": "choice",
-            "criteria": STAGE_CRITERIA,
-            "instructions": (
-                f"Classify state.pairs[{i}] (key={pair['key']!r}, value={pair['value']!r}). "
-                f"{STAGE_CLASSIFICATION_STEPS}"
-            ),
-        }
-        for i, pair in enumerate(pairs)
-    }
-    return _call_with_retry(state, questions)
-
-
-def stage_classification(decision: dict, index: int) -> str | None:
-    """Reads back pair_<index>'s stage label. None if missing/malformed."""
+def pair_boundary(decision: dict, index: int) -> str | None:
+    """Reads back whether pair_<index> starts a new stage. None if missing/malformed -
+    callers should treat that as "same_stage" (merge rather than wrongly split)."""
     try:
-        return decision["answers"][f"pair_{index}"]["choice"]
+        return decision["answers"][f"pair_{index}_boundary"]["choice"]
     except (KeyError, TypeError):
         return None

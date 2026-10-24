@@ -150,21 +150,48 @@ def _resolve_intent(domain: str, objective: str) -> str:
     return resolved
 
 
-def _segment_stages(pairs: list[dict]) -> list[tuple[str, list[dict]]]:
-    """Classifies each field_pairs entry into a fixed stage label, then groups
-    consecutive same-label pairs into one occurrence of that stage, in order.
+def _group_by_boundaries(pairs: list[dict], classification: dict) -> list[list[dict]]:
+    """Groups pairs into stage occurrences using Jev's boundary decisions (made with
+    the whole pair sequence as context, not pair-by-pair in isolation - see
+    jev.classify_pairs). Pair 0 always starts the first group; any later pair marked
+    "new_stage" starts a new group, otherwise it continues the current one. A
+    missing/malformed boundary answer defaults to "same_stage" - merging wrongly is
+    less damaging than splitting wrongly (an extra entry in one stage's example vs. a
+    fragmented, half-formed stage node).
     """
     if not pairs:
         return []
-    decision = jev.classify_stages(pairs)
-    segments: list[tuple[str, list[dict]]] = []
-    for i, pair in enumerate(pairs):
-        label = jev.stage_classification(decision, i) or "other"
-        if segments and segments[-1][0] == label:
-            segments[-1][1].append(pair)
+    groups: list[list[dict]] = [[pairs[0]]]
+    for i in range(1, len(pairs)):
+        if jev.pair_boundary(classification, i) == "new_stage":
+            groups.append([pairs[i]])
         else:
-            segments.append((label, [pair]))
-    return segments
+            groups[-1].append(pairs[i])
+    return groups
+
+
+def _known_stage_labels(domain: str, intent: str) -> list[str]:
+    points, _ = _qdrant.scroll(
+        collection_name=STAGES_COLLECTION,
+        scroll_filter=models.Filter(must=[
+            models.FieldCondition(key="domain", match=models.MatchValue(value=domain)),
+            models.FieldCondition(key="intent", match=models.MatchValue(value=intent)),
+        ]),
+        limit=10_000,
+        with_payload=True,
+        with_vectors=False,
+    )
+    return [p.payload["stage"] for p in points]
+
+
+def _resolve_stage_label(domain: str, intent: str, actions: list[dict]) -> str:
+    """A stage has no fixed name - its identity is whatever previously stored stage
+    (for this exact domain+intent) it's similar enough to, same resolution pattern as
+    _resolve_intent/facts/tasks. A brand new kind of stage just becomes its own label,
+    built from the keys it touched (e.g. 'textbox "origin" / textbox "destination"').
+    """
+    candidate = " / ".join(a["key"] for a in actions)
+    return key_match.find_match(candidate, _known_stage_labels(domain, intent)) or candidate
 
 
 def _occurrence_values(actions: list[dict]) -> str:
@@ -276,17 +303,21 @@ def ground_action(stored_label: str, live_labels: list[str]) -> str | None:
     return key_match.find_match(stored_label, live_labels)
 
 
-def record_run(domain: str, objective: str, pairs: list[dict]) -> None:
+def record_run(domain: str, objective: str, pairs: list[dict], classification: dict) -> None:
     """Called once per successful run (from JudgeResultHandler), on the same
-    field_pairs a run's personal/task classification already looked at. Resolves the
-    run's Intent node, segments its pairs into stage occurrences, and upserts each
-    Stage - a new stage name creates a node, a repeat increments its count and rolls
-    a bounded history of example occurrences.
+    field_pairs AND the same Jev classification decision its personal/task
+    classification already used (classification carries the pair_<i>_boundary
+    answers too - see jev.classify_pairs). Resolves the run's Intent node, groups its
+    pairs into stage occurrences by Jev's boundary calls, resolves each group's
+    identity by similarity to previously stored stages (not a fixed name), and
+    upserts each one - a new stage creates a node, a repeat increments its count and
+    rolls a bounded history of example occurrences.
     """
     domain = domain.lower()
     intent = _resolve_intent(domain, objective)
-    segments = _segment_stages(pairs)
-    for idx, (stage, actions) in enumerate(segments):
-        pre = segments[idx - 1][0] if idx > 0 else "start"
-        post = segments[idx + 1][0] if idx + 1 < len(segments) else "end"
+    groups = _group_by_boundaries(pairs, classification)
+    labels = [_resolve_stage_label(domain, intent, actions) for actions in groups]
+    for idx, (stage, actions) in enumerate(zip(labels, groups)):
+        pre = labels[idx - 1] if idx > 0 else "start"
+        post = labels[idx + 1] if idx + 1 < len(groups) else "end"
         _save_stage(domain, intent, stage, pre, post, actions)
