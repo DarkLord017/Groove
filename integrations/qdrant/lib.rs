@@ -215,14 +215,107 @@ pub struct MatchedFact {
     pub score: f32,
 }
 
+// Field-key matching (candidate field label vs. saved fact key) is the ORIGINAL,
+// validated use case for this 3-stage approach - learn/src/learn/key_match.py's
+// find_match was built and tuned for exactly this (short key/value labels), unlike
+// stage-name or workflow-description matching elsewhere in this system. Ported here
+// minus its 4th stage (cross-encoder rerank): no Rust crate auto-downloads that
+// specific cross-encoder model the way fastembed does for the bi-encoder (verified
+// live - cross-encode-rs needs a pre-exported local ONNX file, not a HF model name),
+// so the decision after stage 3 falls back to the same floor+margin approach already
+// benchmarked for every other matcher in this system, rather than a reproduction of
+// key_match.py's own cross-encoder threshold.
+
+// Python's RAPIDFUZZ_THRESHOLD is 85 on a 0-100 scale; the Rust rapidfuzz crate
+// returns 0.0-1.0, so 0.85 here is the same bar, not a different one.
+const FACT_RAPIDFUZZ_THRESHOLD: f64 = 0.85;
+
+// Mirrors key_match.py's TYPE_PATTERNS exactly - same labels, same regexes, same
+// order. A field whose text implies one type (e.g. "email") should never be offered a
+// fact whose text implies a conflicting one (e.g. "phone"), even if the embedding
+// score alone looked confident.
+const FACT_TYPE_PATTERNS: &[(&str, &str)] = &[
+    ("email", r"\bemail\b"),
+    ("phone", r"\bphone\b"),
+    ("website", r"\b(website|url)\b"),
+    ("type", r"\btype\b"),
+    ("identifier", r"\b(number|id)\b"),
+    ("name", r"\bname\b"),
+    ("company", r"\b(company|organization|business)\b"),
+];
+
+fn classify_fact_type(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    FACT_TYPE_PATTERNS
+        .iter()
+        .find(|(_, pattern)| regex::Regex::new(pattern).unwrap().is_match(&lower))
+        .map(|(label, _)| *label)
+}
+
+// Same identity scheme as facts.py's _point_id - a fact's point_id is always
+// uuid5(NAMESPACE_URL, key), never a random id, so a stage-1 rapidfuzz match can go
+// straight to the record by id instead of re-deriving it some other way.
+fn fact_point_id(key: &str) -> String {
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, key.as_bytes()).to_string()
+}
+
+fn known_fact_keys() -> Vec<String> {
+    let request = ScrollPointsBuilder::new(FACTS_COLLECTION).limit(10_000).with_payload(true).with_vectors(false);
+    let result = runtime().block_on(client().scroll(request));
+    match result {
+        Ok(response) => response
+            .result
+            .into_iter()
+            .filter_map(|p| {
+                let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
+                    Payload::from(p.payload).into();
+                payload_str(&payload, "key")
+            })
+            .collect(),
+        Err(err) => {
+            eprintln!("qdrant_store: known_fact_keys scroll failed: {err}");
+            Vec::new()
+        }
+    }
+}
+
+fn fetch_fact_by_key(key: &str, score: f32) -> Option<MatchedFact> {
+    let id = fact_point_id(key);
+    let result = runtime().block_on(client().get_points(
+        qdrant_client::qdrant::GetPointsBuilder::new(FACTS_COLLECTION, vec![id.into()]).with_payload(true),
+    ));
+    let point = match result {
+        Ok(response) => response.result.into_iter().next()?,
+        Err(err) => {
+            eprintln!("qdrant_store: fetch_fact_by_key retrieve failed: {err}");
+            return None;
+        }
+    };
+    let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> = Payload::from(point.payload).into();
+    let value = latest_fact_value(&payload)?;
+    Some(MatchedFact { key: key.to_string(), value, score })
+}
+
 /// Matches a form field's resolved label (e.g. `textbox "Home city"` - exactly what
-/// redis_store::lookup_element returns) against saved facts, no LLM, same embedding +
-/// floor + margin approach as match_workflow. No domain filter: facts.py's user_facts
-/// collection is global to the user, not per-site (a home city is the same everywhere).
-/// Fact keys are stored in this exact "role \"label\"" format (see field_pairs.py's
-/// _save_pair, which passes the already-resolved ref straight through as the key), so
-/// the query text needs no stripping/reformatting to line up with what's stored.
+/// redis_store::lookup_element returns) against saved facts, no LLM. No domain filter:
+/// facts.py's user_facts collection is global to the user, not per-site. Fact keys are
+/// stored in this exact "role \"label\"" format (see field_pairs.py's _save_pair,
+/// which passes the already-resolved ref straight through as the key), so the query
+/// text needs no stripping/reformatting to line up with what's stored.
 pub fn match_fact(field_label: &str) -> Option<MatchedFact> {
+    // Stage 1: exact/near-exact string match across every known key - cheap, and
+    // skips embeddings entirely when a key is basically the same text already.
+    for key in known_fact_keys() {
+        let ratio = rapidfuzz::fuzz::ratio(field_label.chars(), key.chars());
+        if ratio >= FACT_RAPIDFUZZ_THRESHOLD {
+            if let Some(fact) = fetch_fact_by_key(&key, ratio as f32) {
+                return Some(fact);
+            }
+        }
+    }
+
+    // Stage 2: meaning-based match (floor + margin, benchmarked the same way as
+    // match_workflow/match_intent).
     let query_vector = embed(field_label);
     let request = QueryPointsBuilder::new(FACTS_COLLECTION)
         .query(query_vector)
@@ -247,8 +340,16 @@ pub fn match_fact(field_label: &str) -> Option<MatchedFact> {
     let payload: std::collections::HashMap<String, qdrant_client::qdrant::Value> =
         Payload::from(top.payload.clone()).into();
     let key = payload_str(&payload, "key")?;
-    let value = latest_fact_value(&payload)?;
 
+    // Stage 3: type-conflict check - reject an otherwise-confident match whose own
+    // text implies an incompatible field type.
+    let candidate_type = classify_fact_type(field_label);
+    let match_type = classify_fact_type(&key);
+    if candidate_type.is_some() && match_type.is_some() && candidate_type != match_type {
+        return None;
+    }
+
+    let value = latest_fact_value(&payload)?;
     Some(MatchedFact { key, value, score: top.score })
 }
 

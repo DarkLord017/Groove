@@ -37,7 +37,9 @@ fn find_fact_hint(session_id: &str, form_input: &FormInputInput) -> Option<Strin
     let label = redis_store::lookup_element(session_id, form_input.tab_id, &form_input.r#ref)?;
     let fact = qdrant_store::match_fact(&label)?;
     Some(format!(
-        "Saved value on file for {label}: \"{}\" (from {}, match score {:.2})\n",
+        "Saved value on file for {label}: \"{}\" (from {}, match score {:.2}). If other \
+        fields on this page also have saved values, set them together in one \
+        browser_batch call instead of one form_input call per field.\n",
         fact.value, fact.key, fact.score,
     ))
 }
@@ -197,8 +199,19 @@ fn render_workflow(domain: &str, workflow: &qdrant_store::MatchedWorkflow) -> St
     for (i, (key, value)) in workflow.steps.iter().enumerate() {
         text.push_str(&format!("{}. {key} = {value}\n", i + 1));
     }
+    text.push_str(BATCH_TIP);
     text
 }
+
+// Appended wherever a hint lists multiple known actions: recall knows the sequence but
+// not the live refs/coordinates for this page load, so it can't batch the calls itself -
+// this just tells the caller (Claude) to do so once it has them, instead of one
+// tool-call-and-response round trip per action. Verified this matters: in this session's
+// own live demo runs, action-by-action execution (click, then type, then key) was the
+// single biggest source of avoidable tool calls, bigger than any hint content itself.
+const BATCH_TIP: &str = "Once you have the real refs for these, execute them together in \
+a single browser_batch call rather than one tool call per action - saves a full \
+round trip per step.\n";
 
 fn render_next_stage(stage: &qdrant_store::ScoredStage) -> String {
     format!(
@@ -219,5 +232,6 @@ fn render_plan(domain: &str, intent: &str, stages: &[qdrant_store::KnownStage]) 
             stage.post_condition,
         ));
     }
+    text.push_str(BATCH_TIP);
     text
 }
