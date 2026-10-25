@@ -193,7 +193,12 @@ def _save_stage(domain: str, intent: str, stage: str, pre: str, post: str, actio
         occurrences.append({"actions": actions, "timestamp": time.time()})
         occurrences = occurrences[-MAX_HISTORY:]
 
-    vector = key_match._bi_model.encode(f"{domain} | {intent} | {stage}", normalize_embeddings=True).tolist()
+    # Deliberately no domain in the embedded text - select_stage searches without a
+    # domain filter (see its docstring), so a stage's vector should represent what
+    # it IS (intent + stage), not where it was learned - domain still lives in the
+    # payload below for storage/merge identity, just not folded into the meaning
+    # this vector is meant to capture.
+    vector = key_match._bi_model.encode(f"{intent} | {stage}", normalize_embeddings=True).tolist()
     _qdrant.upsert(collection_name=STAGES_COLLECTION, points=[models.PointStruct(
         id=point_id,
         vector=vector,
@@ -236,24 +241,15 @@ def _cond_match(pre_condition: str, completed_post_conditions: list[str]) -> flo
     return max(_jaccard(pre_condition, cond) for cond in completed_post_conditions)
 
 
-def select_stage(domain: str, intent: str, completed: list[dict]) -> tuple[dict | None, float]:
-    """The Planner: given the stages already done this run (completed - a list of
-    {"stage": name, "post_condition": text} dicts, in order), picks which Stage node
-    is most likely next. Returns (None, confidence) if the top candidate isn't
-    clearly ahead of the runner-up or isn't confident enough on its own - callers
-    should fall back to no-hint rather than guess. Not wired to any hook yet - this
-    is the selection logic on its own, for recall to call later.
-    """
-    domain = domain.lower()
+def select_stage(intent: str, completed: list[dict]) -> tuple[dict | None, float]:
     completed_names = [c["stage"] for c in completed]
     completed_posts = [c["post_condition"] for c in completed]
 
-    query_vector = key_match._bi_model.encode(f"{domain} | {intent}", normalize_embeddings=True).tolist()
+    query_vector = key_match._bi_model.encode(intent, normalize_embeddings=True).tolist()
     hits = _qdrant.query_points(
         collection_name=STAGES_COLLECTION,
         query=query_vector,
         query_filter=models.Filter(must=[
-            models.FieldCondition(key="domain", match=models.MatchValue(value=domain)),
             models.FieldCondition(key="intent", match=models.MatchValue(value=intent)),
         ]),
         limit=STAGE_CANDIDATES_K,
