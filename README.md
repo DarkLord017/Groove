@@ -21,10 +21,7 @@ cargo build --release                         # capture, recall, + the rabbitmq-
 cd learn && uv sync && ./.venv/bin/learn      # starts the async consumer
 ```
 
-`recall`/`capture` are registered as Claude Code hooks via a `settings.json` (see
-`evals/*.sh` for the exact shape) — never wired into this repo's own `.claude/` globally,
-so testing or demoing never affects an unrelated session. Needs `OPENROUTER_API_KEY` set
-for `learn`'s LLM calls.
+Needs `OPENROUTER_API_KEY` set for `learn`'s LLM calls.
 
 ### What was tested
 
