@@ -150,7 +150,23 @@ def _resolve_intent(domain: str, objective: str) -> str:
     return resolved
 
 
-def _known_stage_labels(domain: str, intent: str) -> list[str]:
+KEY_OVERLAP_THRESHOLD = 0.5  # verified on real data: benchmarks/stage_key_overlap_benchmark.py, 7/7
+
+
+def _jaccard_keys(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _known_stage_keysets(domain: str, intent: str) -> list[tuple[str, set]]:
+    """Every existing stage's (point_id, key-set) for this domain+intent - the
+    key-set is the fields touched by its most recent occurrence, used as the
+    stage's identity signature for matching (see _resolve_stage_id). Keyed by the
+    point's own id, NOT its display name - two different stages can coincidentally
+    get the same AI-written name (verified live), and using the name as identity
+    would wrongly collide them in storage.
+    """
     points, _ = _qdrant.scroll(
         collection_name=STAGES_COLLECTION,
         scroll_filter=models.Filter(must=[
@@ -161,17 +177,33 @@ def _known_stage_labels(domain: str, intent: str) -> list[str]:
         with_payload=True,
         with_vectors=False,
     )
-    return [p.payload["stage"] for p in points]
+    result = []
+    for p in points:
+        occurrences = p.payload.get("occurrences", [])
+        if occurrences:
+            result.append((p.id, {a["key"] for a in occurrences[-1]["actions"]}))
+    return result
 
 
-def _resolve_stage_label(domain: str, intent: str, proposed_name: str) -> str:
-    """stage_llm proposes a real name per call, but different calls can word the
-    SAME underlying sub-goal slightly differently - resolving it against previously
-    stored stages (for this exact domain+intent) via key_match, same pattern as
-    _resolve_intent/facts/tasks, collapses those onto one node instead of each call
-    minting a near-duplicate.
+def _resolve_stage_id(domain: str, intent: str, actions: list[dict]) -> str:
+    """A stage's identity (its Qdrant point id) is decided by which FIELDS it
+    actually touches, not by comparing stage_llm's free-text name. Verified on real
+    data (benchmarks/stage_key_overlap_benchmark.py, 7/7, including the case
+    name-matching would get wrong: two genuinely different stages whose AI-written
+    name happened to be identical text) that key_match.find_match - reliable for
+    field labels and intents - is NOT reliable for this short, freely-reworded text
+    (benchmarks/key_match_sentence_benchmark.py, 4/9). Mints a fresh id when no
+    existing stage's fields overlap closely enough - i.e. this really is new.
     """
-    return key_match.find_match(proposed_name, _known_stage_labels(domain, intent)) or proposed_name
+    new_keys = {a["key"] for a in actions}
+    best_id, best_score = None, 0.0
+    for point_id, keyset in _known_stage_keysets(domain, intent):
+        score = _jaccard_keys(new_keys, keyset)
+        if score > best_score:
+            best_id, best_score = point_id, score
+    if best_score >= KEY_OVERLAP_THRESHOLD:
+        return best_id
+    return str(uuid.uuid4())
 
 
 def _occurrence_values(actions: list[dict]) -> str:
@@ -182,8 +214,7 @@ def _occurrence_values(actions: list[dict]) -> str:
     return "; ".join(a["value"] for a in actions)
 
 
-def _save_stage(domain: str, intent: str, stage: str, pre: str, post: str, actions: list[dict]) -> None:
-    point_id = _point_id(f"{domain}|{intent}|{stage}")
+def _save_stage(point_id: str, domain: str, intent: str, stage: str, pre: str, post: str, actions: list[dict]) -> None:
     existing = _qdrant.retrieve(collection_name=STAGES_COLLECTION, ids=[point_id], with_payload=True)
     occurrences = existing[0].payload.get("occurrences", []) if existing else []
     count = (existing[0].payload.get("count", 0) if existing else 0) + 1
@@ -310,6 +341,6 @@ def record_run(domain: str, objective: str, pairs: list[dict]) -> None:
         return
 
     for segment in segments:
-        actions = [pairs[i] for i in segment["pair_indices"]]
-        stage = _resolve_stage_label(domain, intent, segment["name"])
-        _save_stage(domain, intent, stage, segment["pre_condition"], segment["post_condition"], actions)
+        actions = [pairs[i] for i in segment.pair_indices]
+        point_id = _resolve_stage_id(domain, intent, actions)
+        _save_stage(point_id, domain, intent, segment.name, segment.pre_condition, segment.post_condition, actions)
